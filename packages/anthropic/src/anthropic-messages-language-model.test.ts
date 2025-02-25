@@ -522,6 +522,120 @@ describe('AnthropicMessagesLanguageModel', () => {
         body: '{"model":"claude-3-haiku-20240307","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}',
       });
     });
+
+    describe('extended output capabilities', () => {
+      it('should add extended output beta flag when maxTokens exceeds 8192', async () => {
+        prepareJsonResponse({
+          content: [{ type: 'text', text: 'Extended output response' }],
+        });
+
+        await model.doGenerate({
+          inputFormat: 'prompt',
+          mode: { type: 'regular' },
+          prompt: TEST_PROMPT,
+          maxTokens: 10000, // Exceeds 8192 threshold
+        });
+
+        // Verify the beta flag was added to the request headers
+        expect(await server.calls[0].requestHeaders).toMatchObject({
+          'anthropic-beta': 'output-128k-2025-02-19',
+        });
+      });
+
+      it('should not add extended output beta flag when maxTokens is below threshold', async () => {
+        prepareJsonResponse({
+          content: [{ type: 'text', text: 'Normal output response' }],
+        });
+
+        await model.doGenerate({
+          inputFormat: 'prompt',
+          mode: { type: 'regular' },
+          prompt: TEST_PROMPT,
+          maxTokens: 4096, // Below 8192 threshold
+        });
+
+        // Verify the beta flag was not added
+        const headers = await server.calls[0].requestHeaders;
+        expect(headers['anthropic-beta']).toBeUndefined();
+      });
+
+      it('should combine extended output beta flag with other beta flags', async () => {
+        prepareJsonResponse({
+          content: [{ type: 'text', text: 'Response with multiple beta flags' }],
+        });
+
+        // Create a scenario with both thinking enabled and extended output
+        await model.doGenerate({
+          inputFormat: 'prompt',
+          mode: { type: 'regular' },
+          prompt: TEST_PROMPT,
+          maxTokens: 10000, // Exceeds 8192 threshold
+          providerMetadata: {
+            anthropic: {
+              thinking: { type: 'enabled', budgetTokens: 1000 },
+            },
+          },
+        });
+
+        // Verify both beta flags are present
+        const headers = await server.calls[0].requestHeaders;
+        expect(headers['anthropic-beta']).toBe('output-128k-2025-02-19');
+      });
+
+      it('should throw error for non-streaming requests with maxTokens > 21333', async () => {
+        prepareJsonResponse({
+          content: [{ type: 'text', text: 'This should not be reached' }],
+        });
+
+        await expect(
+          model.doGenerate({
+            inputFormat: 'prompt',
+            mode: { type: 'regular' },
+            prompt: TEST_PROMPT,
+            maxTokens: 25000, // Exceeds 21333 threshold
+          })
+        ).rejects.toThrow('Streaming is required when max_tokens is greater than 21,333');
+      });
+    });
+
+    it('should pass beta flags to object-tool mode', async () => {
+      prepareJsonResponse({
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'json',
+            input: { value: 'example value' },
+          },
+        ],
+      });
+
+      await model.doGenerate({
+        inputFormat: 'prompt',
+        mode: {
+          type: 'object-tool',
+          tool: {
+            type: 'function',
+            name: 'json',
+            description: 'Respond with a JSON object.',
+            parameters: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+              additionalProperties: false,
+              $schema: 'http://json-schema.org/draft-07/schema#',
+            },
+          },
+        },
+        prompt: TEST_PROMPT,
+        maxTokens: 10000, // Exceeds 8192 threshold
+      });
+
+      // Verify the beta flag was added
+      expect(await server.calls[0].requestHeaders).toMatchObject({
+        'anthropic-beta': 'output-128k-2025-02-19',
+      });
+    });
   });
 
   describe('doStream', () => {
@@ -1033,6 +1147,70 @@ describe('AnthropicMessagesLanguageModel', () => {
 
       expect(request).toStrictEqual({
         body: '{"model":"claude-3-haiku-20240307","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"stream":true}',
+      });
+    });
+
+    it('should add extended output beta flag when streaming with large maxTokens', async () => {
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'stream-chunks',
+        chunks: [
+          `data: {"type":"message_start","message":{"id":"msg_01KfpJoAEabmH2iHRRFjQMAG","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+          `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
+          `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Extended output streaming"}}\n\n`,
+          `data: {"type":"content_block_stop","index":0}\n\n`,
+          `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":227}}\n\n`,
+          `data: {"type":"message_stop"}\n\n`,
+        ],
+      };
+
+      await model.doStream({
+        inputFormat: 'prompt',
+        mode: { type: 'regular' },
+        prompt: TEST_PROMPT,
+        maxTokens: 10000, // Exceeds 8192 threshold
+      });
+
+      // Verify the beta flag was added
+      expect(await server.calls[0].requestHeaders).toMatchObject({
+        'anthropic-beta': 'output-128k-2025-02-19',
+      });
+    });
+
+    it('should support streaming with very large token counts', async () => {
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'stream-chunks',
+        chunks: [
+          `data: {"type":"message_start","message":{"id":"msg_01KfpJoAEabmH2iHRRFjQMAG","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+          `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
+          `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Large token streaming test"}}\n\n`,
+          `data: {"type":"content_block_stop","index":0}\n\n`,
+          `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":30000}}\n\n`,
+          `data: {"type":"message_stop"}\n\n`,
+        ],
+      };
+
+      const { stream } = await model.doStream({
+        inputFormat: 'prompt',
+        mode: { type: 'regular' },
+        prompt: TEST_PROMPT,
+        maxTokens: 50000, // Well above the 21333 threshold that requires streaming
+      });
+
+      const streamParts = await convertReadableStreamToArray(stream);
+
+      // Verify we can stream with large token counts
+      expect(streamParts).toContainEqual({
+        type: 'finish',
+        finishReason: 'stop',
+        usage: expect.objectContaining({
+          completionTokens: 30000,
+        }),
+        providerMetadata: expect.any(Object),
+      });
+
+      // Verify the beta flag was added
+      expect(await server.calls[0].requestHeaders).toMatchObject({
+        'anthropic-beta': 'output-128k-2025-02-19',
       });
     });
   });

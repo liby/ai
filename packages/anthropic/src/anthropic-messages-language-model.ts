@@ -128,6 +128,13 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV1 {
     const isThinking = thinkingOptions.data?.type === 'enabled';
     const thinkingBudget = thinkingOptions.data?.budgetTokens;
 
+    // Create a new Set for beta flags
+    const betaFlags = new Set([...messagesBetas]);
+    // Add extended output beta flag if maxTokens exceeds 8192
+    if (maxTokens > 8192) {
+      betaFlags.add('output-128k-2025-02-19');
+    }
+
     const baseArgs = {
       // model id:
       model: this.modelId,
@@ -199,7 +206,7 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV1 {
         return {
           args: { ...baseArgs, tools, tool_choice },
           warnings: [...warnings, ...toolWarnings],
-          betas: new Set([...messagesBetas, ...toolsBetas]),
+          betas: new Set([...betaFlags, ...toolsBetas]),
         };
       }
 
@@ -219,7 +226,7 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV1 {
             tool_choice: { type: 'tool', name },
           },
           warnings,
-          betas: messagesBetas,
+          betas: betaFlags,
         };
       }
 
@@ -259,6 +266,14 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV1 {
     options: Parameters<LanguageModelV1['doGenerate']>[0],
   ): Promise<Awaited<ReturnType<LanguageModelV1['doGenerate']>>> {
     const { args, warnings, betas } = await this.getArgs(options);
+
+    // Check if streaming should be enforced
+    if (args.max_tokens > 21333) {
+      throw new UnsupportedFunctionalityError({
+        functionality: 'non-streaming requests with max_tokens > 21,333',
+        message: 'Streaming is required when max_tokens is greater than 21,333',
+      });
+    }
 
     const { responseHeaders, value: response } = await postJsonToApi({
       url: this.buildRequestUrl(false),
