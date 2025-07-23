@@ -1,5 +1,12 @@
 # ai
 
+## 5.0.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies [70ebead]
+  - @ai-sdk/gateway@1.0.0-beta.12
+
 ## 5.0.0-beta.25
 
 ### Patch Changes
